@@ -1,8 +1,14 @@
-class Abingo::Experiment < ActiveRecord::Base
+class Abingo::Experiment
+  include MongoMapper::Document
+  
+  key :test_name, String, :index => true
+  key :status, String
+  timestamps!
+  
   include Abingo::Statistics
   include Abingo::ConversionRate
 
-  has_many :alternatives, :dependent => :destroy, :class_name => "Abingo::Alternative"
+  many :alternatives, :dependent => :destroy, :class_name => "Abingo::Alternative", :foreign_key => "abingo_experiment_id"
   validates_uniqueness_of :test_name
   attr_accessible :test_name
   before_destroy :cleanup_cache
@@ -22,11 +28,11 @@ class Abingo::Experiment < ActiveRecord::Base
   end
 
   def participants
-    alternatives.sum("participants")
+    alternatives.fields(:participants => 1).all.map(&:participants).inject(&:+) || 0
   end
 
   def conversions
-    alternatives.sum("conversions")
+    alternatives.fields(:conversions => 1).all.map(&:conversions).inject(&:+) || 0
   end
 
   def best_alternative
@@ -63,7 +69,7 @@ class Abingo::Experiment < ActiveRecord::Base
     conversion_name ||= test_name
     conversion_name.gsub!(" ", "_")
     cloned_alternatives_array = alternatives_array.clone
-    ActiveRecord::Base.transaction do
+    # ActiveRecord::Base.transaction do
       experiment = Abingo::Experiment.find_or_create_by_test_name(test_name)
       experiment.alternatives.destroy_all  #Blows away alternatives for pre-existing experiments.
       while (cloned_alternatives_array.size > 0)
@@ -74,11 +80,9 @@ class Abingo::Experiment < ActiveRecord::Base
         cloned_alternatives_array -= [alt]
       end
       experiment.status = "Live"
-      if Rails::VERSION::MAJOR == 2
-        experiment.save(false)  #Calling the validation here causes problems b/c of transaction.
-      else
-        experiment.save(:validate => false)
-      end
+
+      experiment.save #(false)  #Calling the validation here causes problems b/c of transaction.
+
       Abingo.cache.write("Abingo::Experiment::exists(#{test_name})".gsub(" ", "_"), 1)
 
       #This might have issues in very, very high concurrency environments...
@@ -87,19 +91,19 @@ class Abingo::Experiment < ActiveRecord::Base
       tests_listening_to_conversion += [test_name] unless tests_listening_to_conversion.include? test_name
       Abingo.cache.write("Abingo::tests_listening_to_conversion#{conversion_name}", tests_listening_to_conversion)
       experiment
-    end
+    # end
   end
 
   def end_experiment!(final_alternative, conversion_name = nil)
     conversion_name ||= test_name
-    ActiveRecord::Base.transaction do
+    # ActiveRecord::Base.transaction do
       alternatives.each do |alternative|
         alternative.lookup = "Experiment completed.  #{alternative.id}"
         alternative.save!
       end
-      update_attribute(:status, "Finished")
+      update_attributes(:status => "Finished")
       Abingo.cache.write("Abingo::Experiment::short_circuit(#{test_name})".gsub(" ", "_"), final_alternative)
-    end
+    # end
   end
 
 end
